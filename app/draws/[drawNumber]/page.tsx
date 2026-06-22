@@ -29,7 +29,7 @@ function slotColor(status: SlotStatus) {
 
 export default function DrawDetailPage() {
   const params = useParams();
-  const drawNumber = Number(params.drawNumber);
+  const drawNumber = Number(params.drawNumber as string);
 
   const [draw, setDraw] = useState<Draw | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
