@@ -4,12 +4,15 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 type SlotStatus = "available" | "reserved" | "paid";
+type PaymentAccount = "" | "Daniel" | "Admin";
 
 type Slot = {
   id?: string;
   number: string;
   customer: string;
   status: SlotStatus;
+  payment_account: PaymentAccount;
+  paid_at: string | null;
 };
 
 type Draw = {
@@ -24,6 +27,8 @@ function createEmptySlots(): Slot[] {
     number: i.toString().padStart(2, "0"),
     customer: "",
     status: "available",
+    payment_account: "",
+    paid_at: null,
   }));
 }
 
@@ -38,14 +43,36 @@ export default function Home() {
 
   const [bulkCustomer, setBulkCustomer] = useState("");
   const [bulkSlots, setBulkSlots] = useState("");
+  const [bulkPaymentAccount, setBulkPaymentAccount] =
+    useState<PaymentAccount>("Daniel");
+
   const [searchCustomer, setSearchCustomer] = useState("");
   const [winningNumber, setWinningNumber] = useState("");
+
+  const slotPrice = Number(draw?.slot_price || 13);
 
   const paidCount = slots.filter((s) => s.status === "paid").length;
   const reservedCount = slots.filter((s) => s.status === "reserved").length;
   const availableCount = slots.filter((s) => s.status === "available").length;
   const soldCount = paidCount + reservedCount;
-  const totalCollection = paidCount * Number(draw?.slot_price || 13);
+
+  const totalExpected = soldCount * slotPrice;
+  const totalCollection = paidCount * slotPrice;
+  const unpaidCollection = reservedCount * slotPrice;
+
+  const danielPaidCount = slots.filter(
+    (s) => s.status === "paid" && s.payment_account === "Daniel"
+  ).length;
+  const adminPaidCount = slots.filter(
+    (s) => s.status === "paid" && s.payment_account === "Admin"
+  ).length;
+  const unknownPaidCount = slots.filter(
+    (s) => s.status === "paid" && !s.payment_account
+  ).length;
+
+  const danielCollection = danielPaidCount * slotPrice;
+  const adminCollection = adminPaidCount * slotPrice;
+  const unknownCollection = unknownPaidCount * slotPrice;
 
   const searchedSlots = searchCustomer.trim()
     ? slots.filter((slot) =>
@@ -105,6 +132,8 @@ export default function Home() {
             slot_number: slot.number,
             customer: "",
             status: "available",
+            payment_account: "",
+            paid_at: null,
           }))
         );
 
@@ -118,6 +147,8 @@ export default function Home() {
           number: s.slot_number,
           customer: s.customer || "",
           status: s.status as SlotStatus,
+          payment_account: (s.payment_account || "") as PaymentAccount,
+          paid_at: s.paid_at || null,
         }))
       );
 
@@ -153,6 +184,8 @@ export default function Home() {
           slot_number: slot.number,
           customer: "",
           status: "available",
+          payment_account: "",
+          paid_at: null,
         }))
       );
 
@@ -168,7 +201,8 @@ export default function Home() {
   async function updateSlot(
     slotNumber: string,
     customer: string,
-    status: SlotStatus
+    status: SlotStatus,
+    paymentAccount: PaymentAccount = ""
   ) {
     const currentSlot = slots.find((s) => s.number === slotNumber);
 
@@ -178,12 +212,18 @@ export default function Home() {
     }
 
     const updatedCustomer = status === "available" ? "" : customer.trim();
+    const updatedPaymentAccount =
+      status === "paid" ? paymentAccount || currentSlot.payment_account || "Daniel" : "";
+    const updatedPaidAt =
+      status === "paid" ? currentSlot.paid_at || new Date().toISOString() : null;
 
     const { error } = await supabase
       .from("lucky_draw_slots")
       .update({
         customer: updatedCustomer,
         status,
+        payment_account: updatedPaymentAccount,
+        paid_at: updatedPaidAt,
       })
       .eq("id", currentSlot.id);
 
@@ -195,7 +235,13 @@ export default function Home() {
     setSlots((prev) =>
       prev.map((slot) =>
         slot.number === slotNumber
-          ? { ...slot, customer: updatedCustomer, status }
+          ? {
+              ...slot,
+              customer: updatedCustomer,
+              status,
+              payment_account: updatedPaymentAccount,
+              paid_at: updatedPaidAt,
+            }
           : slot
       )
     );
@@ -206,10 +252,10 @@ export default function Home() {
     setCustomerInput(slot.customer);
   }
 
-  async function updateSelectedSlot(status: SlotStatus) {
+  async function updateSelectedSlot(status: SlotStatus, account: PaymentAccount = "") {
     if (!selectedSlot) return;
 
-    await updateSlot(selectedSlot.number, customerInput, status);
+    await updateSlot(selectedSlot.number, customerInput, status, account);
 
     setSelectedSlot(null);
     setCustomerInput("");
@@ -225,39 +271,44 @@ export default function Home() {
   }
 
   async function bulkUpdate(status: "reserved" | "paid") {
-  if (!bulkCustomer.trim()) {
-    alert("Please enter customer name.");
-    return;
+    if (!bulkCustomer.trim()) {
+      alert("Please enter customer name.");
+      return;
+    }
+
+    if (status === "paid" && !bulkPaymentAccount) {
+      alert("Please choose payment account.");
+      return;
+    }
+
+    const numbers = parseSlotNumbers(bulkSlots);
+
+    if (numbers.length === 0) {
+      alert("Please enter slot numbers.");
+      return;
+    }
+
+    const occupiedSlots = numbers.filter((number) => {
+      const slot = slots.find((s) => s.number === number);
+      return slot && slot.status !== "available";
+    });
+
+    if (occupiedSlots.length > 0) {
+      alert(
+        `These slots are already taken:\n${occupiedSlots.join(
+          ", "
+        )}\n\nPlease choose other slots.`
+      );
+      return;
+    }
+
+    for (const number of numbers) {
+      await updateSlot(number, bulkCustomer, status, status === "paid" ? bulkPaymentAccount : "");
+    }
+
+    setBulkCustomer("");
+    setBulkSlots("");
   }
-
-  const numbers = parseSlotNumbers(bulkSlots);
-
-  if (numbers.length === 0) {
-    alert("Please enter slot numbers.");
-    return;
-  }
-
-  const occupiedSlots = numbers.filter((number) => {
-    const slot = slots.find((s) => s.number === number);
-    return slot && slot.status !== "available";
-  });
-
-  if (occupiedSlots.length > 0) {
-    alert(
-      `These slots are already taken:\n${occupiedSlots.join(
-        ", "
-      )}\n\nPlease choose other slots.`
-    );
-    return;
-  }
-
-  for (const number of numbers) {
-    await updateSlot(number, bulkCustomer, status);
-  }
-
-  setBulkCustomer("");
-  setBulkSlots("");
-}
 
   async function startNewDraw() {
     if (!draw) return;
@@ -301,6 +352,8 @@ export default function Home() {
         slot_number: slot.number,
         customer: "",
         status: "available",
+        payment_account: "",
+        paid_at: null,
       }))
     );
 
@@ -314,9 +367,13 @@ export default function Home() {
     await loadLatestDraw();
   }
 
-  function slotColor(status: SlotStatus) {
-    if (status === "paid") return "bg-green-500 text-white border-green-600";
-    if (status === "reserved")
+  function slotColor(slot: Slot) {
+    if (slot.status === "paid" && slot.payment_account === "Daniel")
+      return "bg-green-600 text-white border-green-700";
+    if (slot.status === "paid" && slot.payment_account === "Admin")
+      return "bg-blue-600 text-white border-blue-700";
+    if (slot.status === "paid") return "bg-green-500 text-white border-green-600";
+    if (slot.status === "reserved")
       return "bg-yellow-400 text-black border-yellow-500";
     return "bg-white text-black border-gray-300";
   }
@@ -325,13 +382,54 @@ export default function Home() {
     const text = slots
       .map((slot) => {
         const icon =
-          slot.status === "paid" ? "✅" : slot.status === "reserved" ? "🧧" : "";
+          slot.status === "paid"
+            ? slot.payment_account === "Admin"
+              ? "✅ Admin"
+              : "✅ Daniel"
+            : slot.status === "reserved"
+            ? "🧧 Pending"
+            : "";
         return `${slot.number} = ${slot.customer || ""} ${icon}`.trim();
       })
       .join("\n");
 
     navigator.clipboard.writeText(text);
     alert("WhatsApp list copied.");
+  }
+
+  function copyPaymentSummary() {
+    if (!draw) return;
+
+    const pendingList = slots
+      .filter((slot) => slot.status === "reserved")
+      .map((slot) => `${slot.number} ${slot.customer}`)
+      .join("\n");
+
+    const text = `📊 DTWW Lucky Draw #${draw.draw_number
+      .toString()
+      .padStart(3, "0")} Payment Summary
+
+Prize: ${draw.prize}
+Slot Price: RM${draw.slot_price}
+
+Sold: ${soldCount}/100
+Paid: ${paidCount}
+Pending: ${reservedCount}
+Available: ${availableCount}
+
+Daniel Account: RM${danielCollection} (${danielPaidCount} slots)
+Admin Account: RM${adminCollection} (${adminPaidCount} slots)
+Unknown Account: RM${unknownCollection} (${unknownPaidCount} slots)
+
+Total Collected: RM${totalCollection}
+Pending Collection: RM${unpaidCollection}
+Expected Total: RM${totalExpected}
+
+Pending List:
+${pendingList || "No pending payment."}`;
+
+    navigator.clipboard.writeText(text);
+    alert("Payment summary copied.");
   }
 
   function copyWinnerText() {
@@ -404,8 +502,28 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl bg-white p-4 text-center shadow">
-            <p className="text-sm font-bold text-gray-500">Collection</p>
+            <p className="text-sm font-bold text-gray-500">Total Collected</p>
             <p className="text-2xl font-black text-black">RM{totalCollection}</p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-4 text-center shadow">
+            <p className="text-sm font-bold text-gray-500">Daniel Account</p>
+            <p className="text-2xl font-black text-green-700">
+              RM{danielCollection}
+            </p>
+            <p className="text-xs font-bold text-gray-500">
+              {danielPaidCount} slots
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-4 text-center shadow">
+            <p className="text-sm font-bold text-gray-500">Admin Account</p>
+            <p className="text-2xl font-black text-blue-700">
+              RM{adminCollection}
+            </p>
+            <p className="text-xs font-bold text-gray-500">
+              {adminPaidCount} slots
+            </p>
           </div>
 
           <div className="rounded-2xl bg-white p-4 text-center shadow">
@@ -414,9 +532,12 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl bg-white p-4 text-center shadow">
-            <p className="text-sm font-bold text-gray-500">Reserved</p>
+            <p className="text-sm font-bold text-gray-500">Pending Payment</p>
             <p className="text-2xl font-black text-yellow-600">
-              {reservedCount}
+              RM{unpaidCollection}
+            </p>
+            <p className="text-xs font-bold text-gray-500">
+              {reservedCount} slots
             </p>
           </div>
         </div>
@@ -438,12 +559,23 @@ export default function Home() {
             className="mt-3 w-full rounded-xl border p-3 text-black outline-none focus:border-black"
           />
 
+          <select
+            value={bulkPaymentAccount}
+            onChange={(e) =>
+              setBulkPaymentAccount(e.target.value as PaymentAccount)
+            }
+            className="mt-3 w-full rounded-xl border p-3 text-black outline-none focus:border-black"
+          >
+            <option value="Daniel">Daniel Account</option>
+            <option value="Admin">Admin Account</option>
+          </select>
+
           <div className="mt-3 grid grid-cols-2 gap-3">
             <button
               onClick={() => bulkUpdate("reserved")}
               className="rounded-xl bg-yellow-400 p-3 font-black text-black"
             >
-              Reserve
+              Reserve / Pending
             </button>
 
             <button
@@ -469,7 +601,18 @@ export default function Home() {
             <div className="mt-3 rounded-xl bg-gray-100 p-3 text-black">
               {searchedSlots.length > 0 ? (
                 <p className="text-lg font-black">
-                  {searchedSlots.map((slot) => slot.number).join(", ")}
+                  {searchedSlots
+                    .map(
+                      (slot) =>
+                        `${slot.number} ${
+                          slot.status === "paid"
+                            ? `✅ ${slot.payment_account || "Paid"}`
+                            : slot.status === "reserved"
+                            ? "🧧 Pending"
+                            : ""
+                        }`
+                    )
+                    .join(", ")}
                 </p>
               ) : (
                 <p className="font-bold">No slot found.</p>
@@ -519,12 +662,20 @@ export default function Home() {
           >
             📋 Copy List
           </button>
+
+          <button
+            onClick={copyPaymentSummary}
+            className="col-span-2 rounded-xl bg-blue-600 p-3 font-black text-white"
+          >
+            📊 Copy Payment Summary
+          </button>
         </div>
 
         <div className="mt-3 rounded-2xl bg-white p-3 shadow">
-          <div className="flex justify-between text-xs font-bold text-black">
-            <span>🟢 Paid</span>
-            <span>🟡 Reserved</span>
+          <div className="grid grid-cols-2 gap-2 text-xs font-bold text-black">
+            <span>🟢 Daniel Paid</span>
+            <span>🔵 Admin Paid</span>
+            <span>🟡 Pending</span>
             <span>⚪ Available {availableCount}</span>
           </div>
         </div>
@@ -535,13 +686,18 @@ export default function Home() {
               key={slot.number}
               onClick={() => openSlot(slot)}
               className={`h-16 rounded-xl border text-center text-sm font-black shadow ${slotColor(
-                slot.status
+                slot
               )}`}
             >
               <div>{slot.number}</div>
               <div className="truncate px-1 text-xs">
                 {slot.customer || "-"}
               </div>
+              {slot.status === "paid" && (
+                <div className="truncate px-1 text-[10px]">
+                  {slot.payment_account || "Paid"}
+                </div>
+              )}
             </button>
           ))}
         </div>
@@ -565,14 +721,21 @@ export default function Home() {
                   onClick={() => updateSelectedSlot("reserved")}
                   className="rounded-xl bg-yellow-400 p-4 text-lg font-black text-black"
                 >
-                  🟡 Reserve
+                  🟡 Reserve / Pending Payment
                 </button>
 
                 <button
-                  onClick={() => updateSelectedSlot("paid")}
-                  className="rounded-xl bg-green-500 p-4 text-lg font-black text-white"
+                  onClick={() => updateSelectedSlot("paid", "Daniel")}
+                  className="rounded-xl bg-green-600 p-4 text-lg font-black text-white"
                 >
-                  🟢 Paid
+                  🟢 Paid - Daniel Account
+                </button>
+
+                <button
+                  onClick={() => updateSelectedSlot("paid", "Admin")}
+                  className="rounded-xl bg-blue-600 p-4 text-lg font-black text-white"
+                >
+                  🔵 Paid - Admin Account
                 </button>
 
                 <button
